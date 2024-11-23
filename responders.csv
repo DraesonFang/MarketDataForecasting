@@ -1,0 +1,10 @@
+responder,tag_0,tag_1,tag_2,tag_3,tag_4
+responder_0,true,false,true,false,false
+responder_1,true,false,false,true,false
+responder_2,true,true,false,false,false
+responder_3,false,false,true,false,true
+responder_4,false,false,false,true,true
+responder_5,false,true,false,false,true
+responder_6,false,false,true,false,false
+responder_7,false,false,false,true,false
+responder_8,false,true,false,false,false
