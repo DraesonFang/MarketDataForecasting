@@ -1,9 +1,12 @@
 import polars as pl
+from sympy.stats.sampling.sample_numpy import numpy
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.feature_selection import RFE
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+#radom_split
 
 from kaggle_evaluation import jane_street_inference_server,jane_street_gateway
 
@@ -47,13 +50,18 @@ ngpu = torch.cuda.device_count()
 ngf,nc = 3,3
 ndf = 64
 
+feature_selected = ['feature_05', 'feature_06', 'feature_07', 'feature_18', 'feature_22',
+       'feature_32', 'feature_33', 'feature_36', 'feature_41', 'feature_45',
+       'feature_48', 'feature_54', 'feature_56', 'feature_57', 'feature_58',
+       'feature_59', 'feature_60', 'feature_68', 'feature_69', 'feature_74']
+
 device = torch.device("cuda" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
 
 jsr_ = pd.read_parquet(f'test.parquet/date_id=0/part-0.parquet', engine='pyarrow')
 
 jsr_df = pd.DataFrame(jsr_)
 
-x_test = torch.tensor(np.nan_to_num(jsr_[[f'feature_{str(i).zfill(2)}' for i in range(0, 79)]].to_numpy())).float().to(device)
+x_test = torch.tensor(np.nan_to_num(jsr_[feature_selected].to_numpy())).float().to(device)
 # PCA reduce
 print(len(os.listdir('test.parquet')) - 1)
 
@@ -97,11 +105,6 @@ print(selected_features)
 x_train_reduced_df = pd.DataFrame(x_train_reduced, columns=selected_features)
 '''
 
-feature_selected = ['feature_05', 'feature_06', 'feature_07', 'feature_18', 'feature_22',
-       'feature_32', 'feature_33', 'feature_36', 'feature_41', 'feature_45',
-       'feature_48', 'feature_54', 'feature_56', 'feature_57', 'feature_58',
-       'feature_59', 'feature_60', 'feature_68', 'feature_69', 'feature_74']
-
 x_train = jsr_train[feature_selected].to_numpy()
 mean_value = np.nanmean(x_train)
 x_train = np.nan_to_num(x_train, nan=mean_value)
@@ -132,18 +135,22 @@ class RF_NET(nn.Module):
             nn.Linear(20, 1524),
             nn.BatchNorm1d(1524),
             nn.LeakyReLU(),
+            nn.Dropout(p=0.3),
 
             nn.Linear(1524, 824),
             nn.BatchNorm1d(824),
             nn.LeakyReLU(),
+            nn.Dropout(p=0.3),
 
             nn.Linear(824, 424),
             nn.BatchNorm1d(424),
             nn.LeakyReLU(),
+            nn.Dropout(p=0.3),
 
             nn.Linear(424, 124),
             nn.BatchNorm1d(124),
             nn.LeakyReLU(),
+            nn.Dropout(p=0.3),
 
             nn.Linear(124, 1)
         )
@@ -173,19 +180,29 @@ else:
     rf_net = nn.DataParallel(rf_net).to(device)
 
 
-rf_net.load_state_dict(torch.load(f"model/L1_fine_tuned_model.pth", map_location=device))
+# rf_net.load_state_dict(torch.load(f"model/L1_fine_tuned_model.pth", map_location=device))
+
+#split dataset into 3 part
+train_data, temp_data,train_resp,temp_resp = train_test_split(x_train,y_train,test_size=0.3)
+valid_data,test_data, valid_resp,test_resp = train_test_split(temp_data,temp_resp,test_size=0.5)
 
 #convert data into tensor
-x_train_tensor = torch.tensor(x_train).float().to(device)
-y_train_tensor = torch.tensor(y_train).float().to(device)
+x_train_tensor = torch.tensor(train_data).float().to(device)
+y_train_tensor = torch.tensor(train_resp).float().to(device)
+#convert data into tensor
+x_val_tensor = torch.tensor(valid_data).float().to(device)
+y_val_tensor = torch.tensor(valid_resp).float().to(device)
 
 #create dataset and Dataloader
 train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
 train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+#create dataset and Dataloader
+val_dataset = TensorDataset(x_val_tensor, y_val_tensor)
+val_trainloader = DataLoader(val_dataset, batch_size=128, shuffle=True)
 
 # criterion = torch.nn.L1Loss() # Use for binary classification
 criterion = torch.nn.MSELoss()
-optimizer = optim.Adam(rf_net.parameters(), lr=0.0001, betas=(0.5, 0.999))
+optimizer = optim.Adam(rf_net.parameters(), lr=0.0001, weight_decay=1e-4)
 
 
 #
@@ -195,13 +212,16 @@ optimizer = optim.Adam(rf_net.parameters(), lr=0.0001, betas=(0.5, 0.999))
 # for param in rf_net.rafire[-1].parameters():
 #     param.requires_grad = True
 
-num_epochs = 100  # Adjust as needed
+num_epochs = 500  # Adjust as needed
 
 loss_list = []
+val_loss_list = []
+
 
 for epoch in range(num_epochs):
     rf_net.train()  # Ensure training mode is set
     running_loss = 0.0
+    val_running_loss = 0.0
 
     for inputs, labels in train_dataloader:
         # Zero gradients
@@ -216,42 +236,57 @@ for epoch in range(num_epochs):
 
         running_loss += loss.item()
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss / len(train_dataloader)}")
+    rf_net.eval()
+    with torch.no_grad():
+        for inputs, labels in val_trainloader:
+            outputs = rf_net(inputs).squeeze()  # Adjust output shape if needed
+            loss = criterion(outputs, labels.squeeze())
+            val_running_loss += loss.item()
+
+    print(f"Epoch [{epoch+1}/{num_epochs}], training Loss: {running_loss / len(train_dataloader)},validation Loss: {val_running_loss / len(val_trainloader)}")
     loss_list.append(running_loss / len(train_dataloader))
+    val_loss_list.append(val_running_loss / len(val_trainloader))
 
+# MSE
+d1 = pd.DataFrame(loss_list)
+d2 = pd.DataFrame(val_loss_list)
+data = pd.DataFrame(zip(d1,d2),columns=['train','validation'])
+data.to_csv("loss.csv")
 print(loss_list)
+print(val_loss_list)
 
-torch.save(rf_net.state_dict(), "model/L1_fine_tuned_model.pth")
+torch.save(rf_net.state_dict(), "model/MSE_fine_tuned_model.pth")
 
-def predict(test: pl.DataFrame, lags: pl.DataFrame | None) -> pl.DataFrame | pd.DataFrame:
-    """Make a prediction."""
-    # All the responders from the previous day are passed in at time_id == 0. We save them in a global variable for access at every time_id.
-    # Use them as extra features, if you like.
-    global lags_
-    if lags is not None:
-        lags_ = lags
-    # 1. Select the required feature columns and convert to numpy array for Keras
-
-    y_pred = []
-    for data in x_test:
-        y_pred += [rf_net(torch.reshape(data, (1, len(data)))).cpu().detach().numpy().reshape(-1)]
-
-    y_pred = np.array(y_pred)
-
-    # 3. Prepare the DataFrame for output
-    predictions = test.select('row_id').with_columns(
-        pl.Series("responder_6", y_pred.flatten())
-    )
-    print(predictions)
-    # The predict function must return a DataFrame
-    assert isinstance(predictions, pl.DataFrame | pd.DataFrame)
-    # with columns 'row_id', 'responer_6'
-    assert predictions.columns == ['row_id', 'responder_6']
-    # and as many rows as the test data.
-    assert len(predictions) == len(test)
-
-    return predictions
-
+# rf_net.eval()
+# def predict(test: pl.DataFrame, lags: pl.DataFrame | None) -> pl.DataFrame | pd.DataFrame:
+#     """Make a prediction."""
+#     # All the responders from the previous day are passed in at time_id == 0. We save them in a global variable for access at every time_id.
+#     # Use them as extra features, if you like.
+#     global lags_
+#     if lags is not None:
+#         lags_ = lags
+#     # 1. Select the required feature columns and convert to numpy array for Keras
+#
+#     y_pred = []
+#     for data in x_test:
+#         y_pred += [rf_net(torch.reshape(data, (1, len(data)))).cpu().detach().numpy().reshape(-1)]
+#
+#     y_pred = np.array(y_pred)
+#
+#     # 3. Prepare the DataFrame for output
+#     predictions = test.select('row_id').with_columns(
+#         pl.Series("responder_6", y_pred.flatten())
+#     )
+#     print(predictions)
+#     # The predict function must return a DataFrame
+#     assert isinstance(predictions, pl.DataFrame | pd.DataFrame)
+#     # with columns 'row_id', 'responer_6'
+#     assert predictions.columns == ['row_id', 'responder_6']
+#     # and as many rows as the test data.
+#     assert len(predictions) == len(test)
+#
+#     return predictions
+#
 # inference_server = jane_street_inference_server.JSInferenceServer(predict)
 #
 # if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):

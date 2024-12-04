@@ -1,4 +1,5 @@
 import polars as pl
+from IPython.core.pylabtools import figsize
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.feature_selection import RFE
 from sklearn.ensemble import GradientBoostingClassifier
@@ -26,6 +27,7 @@ import numpy as np
 import pandas as pd
 import random,cv2,os
 import matplotlib.pyplot as plt
+import seaborn as sns
 import matplotlib.animation as animation
 
 seed = 999
@@ -64,8 +66,25 @@ x_train = x_train.loc[:,x_train.isnull().mean() < 0.99]
 feature_names = x_train.columns.to_numpy()
 
 jsr_train = jsr_train.sample(n=50000,random_state=50)
-x_train = jsr_train[feature_names]
-x_train.hist(bin=len(feature_names),figsize=(15,15))
+
+feature_selected = ['feature_18', 'feature_19', 'feature_20',  'feature_22',
+       'feature_32', 'feature_23', 'feature_24', 'feature_25', 'feature_28',
+       'feature_48', 'feature_32', 'feature_33', 'feature_34', 'feature_35',
+       'feature_59', 'feature_36', 'feature_37', 'feature_38', 'feature_39',
+       'feature_40', 'feature_41', 'feature_42', 'feature_43', 'feature_44',
+       'feature_45', 'feature_46', 'feature_50', 'feature_51', 'feature_52',
+       'feature_53', 'feature_54', 'feature_55', 'feature_56', 'feature_57',
+       'feature_61', 'feature_65', 'feature_66']
+
+
+x_train = pd.DataFrame(jsr_train[feature_selected])
+# x_train.hist(bins=20,figsize=(15,15))
+# plt.tight_layout()
+# Correlation heatmap
+corr = x_train.corr()  # Get correlation matrix
+plt.figure(figsize=(20,20))
+sns.heatmap(corr, annot=True, cmap='coolwarm', fmt='.2f')
+plt.title("Features Correlations",fontsize=50)
 plt.show()
 
 feature_selected = ['feature_05', 'feature_06', 'feature_07', 'feature_18', 'feature_22',
